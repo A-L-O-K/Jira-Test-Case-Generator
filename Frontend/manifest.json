@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Jira Test Case Generator",
+  "version": "1.0.0",
+  "description": "Generate and select test cases from a Jira story.",
+  "host_permissions": [
+    "http://127.0.0.1:5000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.atlassian.net/*",
+        "https://*/browse/*",
+        "http://*/jira/*",
+        "http://*/browse/*",
+        "https://*/jira/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -6,6 +6,11 @@ import re
 from typing import Any
 
 import chromadb
+from dotenv import load_dotenv
+from groq import Groq
+
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 def _embed_text(text: str) -> list[float]:
@@ -88,5 +93,27 @@ class LLMHandler:
         return story
 
     def llm_handler(self, text: str) -> str:
-        """Placeholder for the future LLM API request."""
-        return text
+        """Generate a response from Groq using the configured API key."""
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "GROQ_API_KEY is not set. Add it to Backend/.env; "
+                "see Backend/.env.example."
+            )
+
+        client = Groq(api_key=api_key)
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": text}],
+            temperature=1,
+            max_completion_tokens=2048,
+            top_p=1,
+            reasoning_effort="medium",
+            stream=True,
+            stop=None,
+        )
+
+        return "".join(
+            chunk.choices[0].delta.content or ""
+            for chunk in completion
+        )

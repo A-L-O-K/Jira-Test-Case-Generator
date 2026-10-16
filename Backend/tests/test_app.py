@@ -11,6 +11,13 @@ class TestCaseApiTests(unittest.TestCase):
     def setUp(self):
         self.chroma_directory = tempfile.TemporaryDirectory()
         self.chroma_path = self.chroma_directory.name
+        self.llm_patcher = patch.object(
+            app.LLMHandler,
+            "llm_handler",
+            return_value="Generated test cases",
+        )
+        self.llm_patcher.start()
+        self.addCleanup(self.llm_patcher.stop)
         self.client = create_app(chroma_path=self.chroma_path).test_client()
 
     def tearDown(self):
@@ -26,14 +33,21 @@ class TestCaseApiTests(unittest.TestCase):
         self.assertEqual(related.json["data"][0]["key"], "PROJ-124")
 
     def test_generate_preview_and_publish_test_cases(self):
-        generated = self.client.post(
-            "/api/v1/test-cases/generate",
-            json={"story_key": "PROJ-123"},
-        )
+        with patch.object(
+            app.LLMHandler,
+            "llm_handler",
+            return_value="Story: generated test cases",
+        ):
+            generated = self.client.post(
+                "/api/v1/test-cases/generate",
+                json={"story_key": "PROJ-123"},
+            )
         self.assertEqual(generated.status_code, 201)
         cases = generated.json["data"]["test_cases"]
-        self.assertIn("Story:", generated.json["data"]["llm_response"])
-        self.assertIn("Relevant context:", generated.json["data"]["llm_response"])
+        self.assertEqual(
+            generated.json["data"]["llm_response"],
+            "Story: generated test cases",
+        )
         self.assertEqual(
             generated.json["data"]["relevant_context"],
             ['{"key": "PROJ-124", "summary": "Sign in with valid credentials", '

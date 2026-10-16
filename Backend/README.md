@@ -14,6 +14,8 @@ python app.py
 ```
 
 The API is available at `http://127.0.0.1:5000`. Requests and responses use JSON.
+Before starting the API, set `GROQ_API_KEY` in `Backend/.env` to your Groq API
+key. Use `.env.example` as a template if needed; `.env` is excluded from Git.
 
 ## Endpoints
 
@@ -46,14 +48,14 @@ path in `CHROMA_DB_PATH`) stores the seeded stories and any new stories. The
 compressed story is used to retrieve up to three relevant stored stories,
 excluding the current story, and the story plus retrieved context is passed to
 `LLMHandler.llm_handler` in [`llmHandler.py`](./llmHandler.py). The handler
-currently echoes its input as a placeholder for a future LLM API integration.
+streams a response from Groq's `openai/gpt-oss-120b` model and returns the
+combined text.
 Chroma uses normalized, deterministic local text vectors for retrieval, so no
 embedding model download or embedding-service credentials are needed.
 
 The response contains generated `test_cases`, each with an `id` such as
-`GEN-001`, plus `relevant_context` and `llm_response` containing the dummy
-handler's echoed prompt. Generation currently returns two deterministic dummy
-cases.
+`GEN-001`, plus `relevant_context` and `llm_response` containing the model
+response. Generation currently returns two deterministic dummy cases.
 
 For an unknown `story_key`, include a `story` object with non-empty `summary`
 and `description`; the story key is taken from `story_key` if `story.key` is

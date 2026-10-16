@@ -14,7 +14,24 @@ class TestCaseApiTests(unittest.TestCase):
         self.llm_patcher = patch.object(
             app.LLMHandler,
             "llm_handler",
-            return_value="Generated test cases",
+            return_value=json.dumps(
+                {
+                    "test_cases": [
+                        {
+                            "title": "User can reset password with a registered email",
+                            "preconditions": ["A registered account exists."],
+                            "steps": ["Open reset page.", "Submit registered email."],
+                            "expected_result": "A reset email is sent.",
+                        },
+                        {
+                            "title": "Unregistered email is handled",
+                            "preconditions": [],
+                            "steps": ["Open reset page.", "Submit an unknown email."],
+                            "expected_result": "A non-disclosing error is shown.",
+                        },
+                    ]
+                }
+            ),
         )
         self.llm_patcher.start()
         self.addCleanup(self.llm_patcher.stop)
@@ -36,7 +53,18 @@ class TestCaseApiTests(unittest.TestCase):
         with patch.object(
             app.LLMHandler,
             "llm_handler",
-            return_value="Story: generated test cases",
+            return_value=json.dumps(
+                {
+                    "test_cases": [
+                        {
+                            "title": "Generated from model response",
+                            "preconditions": ["An account exists."],
+                            "steps": ["Perform the requested action."],
+                            "expected_result": "The requested action succeeds.",
+                        }
+                    ]
+                }
+            ),
         ):
             generated = self.client.post(
                 "/api/v1/test-cases/generate",
@@ -46,8 +74,21 @@ class TestCaseApiTests(unittest.TestCase):
         cases = generated.json["data"]["test_cases"]
         self.assertEqual(
             generated.json["data"]["llm_response"],
-            "Story: generated test cases",
+            json.dumps(
+                {
+                    "test_cases": [
+                        {
+                            "title": "Generated from model response",
+                            "preconditions": ["An account exists."],
+                            "steps": ["Perform the requested action."],
+                            "expected_result": "The requested action succeeds.",
+                        }
+                    ]
+                }
+            ),
         )
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0]["title"], "Generated from model response")
         self.assertEqual(
             generated.json["data"]["relevant_context"],
             ['{"key": "PROJ-124", "summary": "Sign in with valid credentials", '
@@ -71,7 +112,18 @@ class TestCaseApiTests(unittest.TestCase):
 
     def test_generate_sends_full_story_through_compressor_and_llm_handler(self):
         compressed_text = '{"compressed":"story"}'
-        llm_result = "dummy LLM response"
+        llm_result = json.dumps(
+            {
+                "test_cases": [
+                    {
+                        "title": "Generated case",
+                        "preconditions": [],
+                        "steps": ["Do the action."],
+                        "expected_result": "Action succeeds.",
+                    }
+                ]
+            }
+        )
         with (
             patch("app.compressor", return_value=compressed_text) as compressor_mock,
             patch.object(
@@ -89,12 +141,42 @@ class TestCaseApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         story = response.json["data"]["story"]
         compressor_mock.assert_called_once_with(json.dumps(story, ensure_ascii=False))
-        llm_mock.assert_called_once_with(
-            "Story:\n"
-            f"{compressed_text}\n\n"
-            "Relevant context:\nrelated story context"
-        )
+        llm_mock.assert_called_once()
+        llm_prompt = llm_mock.call_args.args[0]
+        self.assertIn("Return only a valid JSON object", llm_prompt)
+        self.assertIn(f"Story:\n{compressed_text}", llm_prompt)
+        self.assertTrue(llm_prompt.endswith("Relevant context:\nrelated story context"))
         self.assertEqual(response.json["data"]["llm_response"], llm_result)
+
+    def test_generate_returns_error_when_llm_response_is_not_valid_json(self):
+        with patch.object(
+            app.LLMHandler,
+            "llm_handler",
+            return_value="This is not JSON",
+        ):
+            response = self.client.post(
+                "/api/v1/test-cases/generate",
+                json={"story_key": "PROJ-123"},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("invalid JSON", response.json["error"])
+
+    def test_generate_rejects_invalid_llm_test_case(self):
+        with patch.object(
+            app.LLMHandler,
+            "llm_handler",
+            return_value=json.dumps(
+                {"test_cases": [{"title": "", "steps": [], "expected_result": ""}]}
+            ),
+        ):
+            response = self.client.post(
+                "/api/v1/test-cases/generate",
+                json={"story_key": "PROJ-123"},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("invalid test case", response.json["error"])
 
     def test_new_story_is_saved_and_available_as_future_rag_context(self):
         new_story = {

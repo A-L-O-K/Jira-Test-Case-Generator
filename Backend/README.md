@@ -23,7 +23,7 @@ key. Use `.env.example` as a template if needed; `.env` is excluded from Git.
 | --- | --- | --- |
 | `GET` | `/api/v1/stories/PROJ-123` | Get a seeded story |
 | `GET` | `/api/v1/stories/PROJ-123/related` | Get related seeded stories |
-| `POST` | `/api/v1/test-cases/generate` | Generate dummy cases for a story |
+| `POST` | `/api/v1/test-cases/generate` | Generate test cases for a story with Groq |
 | `POST` | `/api/v1/test-cases/preview` | Validate/preview submitted cases |
 | `POST` | `/api/v1/test-cases/publish` | Publish generated cases to the in-memory collection |
 | `PUT` / `PATCH` | `/api/v1/test-cases/TC-001` | Replace editable fields or partially update an existing case |
@@ -49,13 +49,16 @@ compressed story is used to retrieve up to three relevant stored stories,
 excluding the current story, and the story plus retrieved context is passed to
 `LLMHandler.llm_handler` in [`llmHandler.py`](./llmHandler.py). The handler
 streams a response from Groq's `openai/gpt-oss-120b` model and returns the
-combined text.
+combined text. The prompt requests a JSON object containing test cases, and the
+endpoint validates the model output before returning it as the `test_cases`
+array. Generated IDs and the submitted story key are assigned by the API.
 Chroma uses normalized, deterministic local text vectors for retrieval, so no
 embedding model download or embedding-service credentials are needed.
 
-The response contains generated `test_cases`, each with an `id` such as
-`GEN-001`, plus `relevant_context` and `llm_response` containing the model
-response. Generation currently returns two deterministic dummy cases.
+The response contains model-generated `test_cases`, each with an `id` such as
+`GEN-001`, plus `relevant_context` and `llm_response` containing the raw JSON
+text returned by the model. If the model response is not valid JSON or does not
+contain valid test cases, the endpoint returns `502 Bad Gateway`.
 
 For an unknown `story_key`, include a `story` object with non-empty `summary`
 and `description`; the story key is taken from `story_key` if `story.key` is

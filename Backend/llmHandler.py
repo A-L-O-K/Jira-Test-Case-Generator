@@ -109,6 +109,7 @@ class LLMHandler:
             max_completion_tokens=2048,
             top_p=1,
             reasoning_effort="medium",
+            response_format={"type": "json_object"},
             stream=True,
             stop=None,
         )

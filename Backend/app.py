@@ -72,6 +72,12 @@ def _validate_test_case(test_case, index):
         return f"Every step in test_cases[{index}].steps must be a non-empty string."
     if not isinstance(test_case["expected_result"], str) or not test_case["expected_result"].strip():
         return f"test_cases[{index}].expected_result must be a non-empty string."
+    preconditions = test_case.get("preconditions", [])
+    if not isinstance(preconditions, list) or any(
+        not isinstance(item, str) or not item.strip()
+        for item in preconditions
+    ):
+        return f"test_cases[{index}].preconditions must be an array of non-empty strings."
     return None
 
 
@@ -160,38 +166,78 @@ def create_app(chroma_path: str | None = None):
         )
         context_text = "\n".join(relevant_context)
         llm_input = (
+            "Generate actionable manual QA test cases for the user story below. "
+            "Cover positive, negative, and relevant edge cases without inventing "
+            "requirements that are not supported by the story or context. "
+            "Return only a valid JSON object with this shape: "
+            '{"test_cases":[{"title":"...","preconditions":["..."],'
+            '"steps":["..."],"expected_result":"..."}]}. '
+            "Do not include markdown, IDs, or story_key; the API adds those. "
+            "Return at least one test case.\n\n"
             f"Story:\n{compressed_story}\n\n"
             f"Relevant context:\n{context_text}"
         )
         llm_response = llm_handler.llm_handler(llm_input)
-        if store["stories"].get(story_key) is None and llm_handler.getStory(story_key) is None:
-            llm_handler.addInRag(story_key, story_text)
-        store["stories"][story_key] = story
+
+        try:
+            generated_response = json.loads(llm_response)
+        except json.JSONDecodeError:
+            return jsonify(
+                error="The LLM returned invalid JSON instead of test cases.",
+                llm_response=llm_response,
+            ), 502
+        if not isinstance(generated_response, dict):
+            return jsonify(
+                error="The LLM response must be a JSON object containing test_cases.",
+                llm_response=llm_response,
+            ), 502
+        generated_cases = generated_response.get("test_cases")
+        if not isinstance(generated_cases, list) or not generated_cases:
+            return jsonify(
+                error="The LLM response must contain a non-empty test_cases array.",
+                llm_response=llm_response,
+            ), 502
+
+        validated_cases = []
+        for index, generated_case in enumerate(generated_cases):
+            if not isinstance(generated_case, dict):
+                return jsonify(
+                    error=f"test_cases[{index}] must be an object.",
+                    llm_response=llm_response,
+                ), 502
+            generated_case = {
+                **generated_case,
+                "preconditions": generated_case.get("preconditions", []),
+            }
+            validation_error = _validate_test_case(generated_case, index)
+            if validation_error:
+                return jsonify(
+                    error=f"The LLM returned an invalid test case: {validation_error}",
+                    llm_response=llm_response,
+                ), 502
+            validated_cases.append(
+                {
+                    "title": generated_case["title"].strip(),
+                    "preconditions": [
+                        item.strip() for item in generated_case["preconditions"]
+                    ],
+                    "steps": [step.strip() for step in generated_case["steps"]],
+                    "expected_result": generated_case["expected_result"].strip(),
+                }
+            )
 
         test_cases = [
             {
                 "id": f"GEN-{next(store['next_generated_id']):03d}",
-                "title": f"Verify the user can {story['summary'].lower()}",
                 "story_key": story_key,
-                "preconditions": ["The application is available."],
-                "steps": [
-                    f"Open the application flow for: {story['summary']}.",
-                    "Complete the required action using valid information.",
-                ],
-                "expected_result": f"The action completes successfully for story {story_key}.",
-            },
-            {
-                "id": f"GEN-{next(store['next_generated_id']):03d}",
-                "title": f"Verify invalid input is handled for {story['summary'].lower()}",
-                "story_key": story_key,
-                "preconditions": ["The application is available."],
-                "steps": [
-                    f"Open the application flow for: {story['summary']}.",
-                    "Submit missing or invalid information.",
-                ],
-                "expected_result": "A helpful validation message is shown and no change is applied.",
-            },
+                **generated_case,
+            }
+            for generated_case in validated_cases
         ]
+        if store["stories"].get(story_key) is None and llm_handler.getStory(story_key) is None:
+            llm_handler.addInRag(story_key, story_text)
+        store["stories"][story_key] = story
+
         for test_case in test_cases:
             store["generated"][test_case["id"]] = deepcopy(test_case)
         return jsonify(

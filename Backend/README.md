@@ -1,8 +1,8 @@
 # Test Case Generator API
 
-A small Flask API with seeded Jira-like stories and in-memory test cases. It is
-intended for local Postman testing; data resets whenever the app restarts and no
-real Jira connection is made.
+A small Flask API for generating test cases and creating them as linked Tasks
+in Jira. Story and generated test-case records are kept in memory; Chroma
+persists story context across app restarts.
 
 ## Run locally
 
@@ -15,7 +15,11 @@ python app.py
 
 The API is available at `http://127.0.0.1:5000`. Requests and responses use JSON.
 Before starting the API, set `GROQ_API_KEY` in `Backend/.env` to your Groq API
-key. Use `.env.example` as a template if needed; `.env` is excluded from Git.
+key. To create selected test cases in Jira, also set `JIRA_BASE_URL`,
+`JIRA_EMAIL`, and `JIRA_API_TOKEN` in `Backend/.env`. Use `.env.example` as a
+template; `.env` is excluded from Git. The Jira API token remains on the
+backend and is never sent to the browser extension. Jira Cloud API tokens use
+Basic authentication with the Atlassian account email and token.
 
 ## Endpoints
 
@@ -26,6 +30,7 @@ key. Use `.env.example` as a template if needed; `.env` is excluded from Git.
 | `POST` | `/api/v1/test-cases/generate` | Generate test cases for a story with Groq |
 | `POST` | `/api/v1/test-cases/preview` | Validate/preview submitted cases |
 | `POST` | `/api/v1/test-cases/publish` | Publish generated cases to the in-memory collection |
+| `POST` | `/api/v1/test-cases/create` | Create selected cases as Jira Tasks and link them to their story |
 | `PUT` / `PATCH` | `/api/v1/test-cases/TC-001` | Replace editable fields or partially update an existing case |
 
 ### Generate test cases
@@ -110,6 +115,24 @@ Pass the generated IDs from the generate response:
 
 Published cases receive IDs such as `TC-002`. IDs from generation are only
 available for publishing until the app restarts.
+
+### Create selected cases in Jira
+
+The extension sends selected generated IDs to the backend:
+
+```json
+{
+  "story_key": "PROJ-123",
+  "test_case_ids": ["GEN-001"]
+}
+```
+
+The backend creates each case as a Jira Task in the story's project, formats
+preconditions, steps, and expected results in the Task description, and creates
+a `Relates` issue link between the Task and the Story. The response includes
+each Jira issue key and URL. If Jira fails partway through, the response lists
+any issues already created and whether each one was linked; created cases are
+not retried automatically.
 
 ### Update a test case
 

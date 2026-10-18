@@ -1,10 +1,11 @@
 import json
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import app
 from app import create_app
+from jira_client import JiraApiError
 
 
 class TestCaseApiTests(unittest.TestCase):
@@ -109,6 +110,107 @@ class TestCaseApiTests(unittest.TestCase):
         )
         self.assertEqual(published.status_code, 201)
         self.assertEqual(published.json["data"]["published"][0]["id"], "TC-002")
+
+    def test_create_jira_test_cases_creates_and_links_selected_cases(self):
+        generated = self.client.post(
+            "/api/v1/test-cases/generate",
+            json={"story_key": "PROJ-123"},
+        )
+        cases = generated.json["data"]["test_cases"]
+
+        with patch("app.JiraClient") as jira_client_class:
+            jira_client_class.return_value.base_url = "https://example.atlassian.net"
+            jira_client_class.return_value.create_task.side_effect = [
+                "PROJ-456",
+                "PROJ-457",
+            ]
+            response = self.client.post(
+                "/api/v1/test-cases/create",
+                json={
+                    "story_key": "PROJ-123",
+                    "test_case_ids": [case["id"] for case in cases],
+                },
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            response.json["data"]["created"],
+            [
+                {
+                    "test_case_id": cases[0]["id"],
+                    "title": cases[0]["title"],
+                    "key": "PROJ-456",
+                    "url": "https://example.atlassian.net/browse/PROJ-456",
+                    "linked": True,
+                },
+                {
+                    "test_case_id": cases[1]["id"],
+                    "title": cases[1]["title"],
+                    "key": "PROJ-457",
+                    "url": "https://example.atlassian.net/browse/PROJ-457",
+                    "linked": True,
+                },
+            ],
+        )
+        self.assertEqual(
+            jira_client_class.return_value.create_task.call_args_list,
+            [
+                call("PROJ-123", cases[0]),
+                call("PROJ-123", cases[1]),
+            ],
+        )
+        self.assertEqual(
+            jira_client_class.return_value.link_to_story.call_args_list,
+            [
+                call("PROJ-123", "PROJ-456"),
+                call("PROJ-123", "PROJ-457"),
+            ],
+        )
+
+    def test_create_jira_test_cases_reports_partial_failure_without_losing_created_issue(self):
+        generated = self.client.post(
+            "/api/v1/test-cases/generate",
+            json={"story_key": "PROJ-123"},
+        )
+        case = generated.json["data"]["test_cases"][0]
+
+        with patch("app.JiraClient") as jira_client_class:
+            jira_client_class.return_value.base_url = "https://example.atlassian.net"
+            jira_client_class.return_value.create_task.return_value = "PROJ-456"
+            jira_client_class.return_value.link_to_story.side_effect = JiraApiError(
+                "Jira link request failed."
+            )
+            response = self.client.post(
+                "/api/v1/test-cases/create",
+                json={
+                    "story_key": "PROJ-123",
+                    "test_case_ids": [case["id"]],
+                },
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json["data"]["created"][0]["key"],
+            "PROJ-456",
+        )
+        self.assertFalse(response.json["data"]["created"][0]["linked"])
+        self.assertEqual(response.json["data"]["failed_test_case_id"], case["id"])
+
+    def test_create_jira_test_cases_rejects_cases_for_another_story(self):
+        generated = self.client.post(
+            "/api/v1/test-cases/generate",
+            json={"story_key": "PROJ-123"},
+        )
+        case_id = generated.json["data"]["test_cases"][0]["id"]
+
+        with patch("app.JiraClient") as jira_client_class:
+            response = self.client.post(
+                "/api/v1/test-cases/create",
+                json={"story_key": "PROJ-124", "test_case_ids": [case_id]},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        jira_client_class.assert_not_called()
 
     def test_generate_sends_full_story_through_compressor_and_llm_handler(self):
         compressed_text = '{"compressed":"story"}'

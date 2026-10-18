@@ -5,6 +5,7 @@ import json
 from flask import Flask, jsonify, request
 
 from compressorEngine import compressor
+from jira_client import JiraApiError, JiraClient
 from llmHandler import LLMHandler
 
 
@@ -290,6 +291,69 @@ def create_app(chroma_path: str | None = None):
             store["test_cases"][published_id] = test_case
             published.append(deepcopy(test_case))
         return jsonify(data={"published": published}), 201
+
+    @app.post("/api/v1/test-cases/create")
+    def create_jira_test_cases():
+        body = _json_body()
+        if body is None:
+            return jsonify(error="Request body must be a JSON object."), 400
+
+        story_key = body.get("story_key")
+        if not isinstance(story_key, str) or not story_key.strip():
+            return jsonify(error="story_key is required and must be a string."), 400
+        story_key = story_key.strip().upper()
+
+        test_case_ids = body.get("test_case_ids")
+        if not isinstance(test_case_ids, list) or not test_case_ids:
+            return jsonify(error="test_case_ids must be a non-empty array."), 400
+        if any(not isinstance(case_id, str) for case_id in test_case_ids):
+            return jsonify(error="Every test_case_id must be a string."), 400
+        if len(set(test_case_ids)) != len(test_case_ids):
+            return jsonify(error="test_case_ids must not contain duplicates."), 400
+
+        missing_ids = [
+            case_id for case_id in test_case_ids
+            if case_id not in store["generated"]
+        ]
+        if missing_ids:
+            return jsonify(
+                error="One or more generated test cases were not found.",
+                missing_ids=missing_ids,
+            ), 404
+
+        test_cases = [store["generated"][case_id] for case_id in test_case_ids]
+        if any(test_case["story_key"] != story_key for test_case in test_cases):
+            return jsonify(
+                error="Every selected test case must belong to the requested story."
+            ), 400
+
+        created = []
+        current_case_id = None
+        try:
+            jira_client = JiraClient()
+            for case_id, test_case in zip(test_case_ids, test_cases):
+                current_case_id = case_id
+                issue_key = jira_client.create_task(story_key, test_case)
+                created_issue = {
+                    "test_case_id": case_id,
+                    "title": test_case["title"],
+                    "key": issue_key,
+                    "url": f"{jira_client.base_url}/browse/{issue_key}",
+                    "linked": False,
+                }
+                created.append(created_issue)
+                jira_client.link_to_story(story_key, issue_key)
+                created_issue["linked"] = True
+        except JiraApiError as error:
+            return jsonify(
+                error=str(error),
+                data={
+                    "created": created,
+                    "failed_test_case_id": current_case_id,
+                },
+            ), 502
+
+        return jsonify(data={"created": created, "story_key": story_key}), 201
 
     @app.route("/api/v1/test-cases/<test_case_id>", methods=["PUT", "PATCH"])
     def update_test_case(test_case_id):

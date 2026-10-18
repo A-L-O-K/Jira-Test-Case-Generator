@@ -124,6 +124,7 @@
       button:disabled { cursor: wait; opacity: .65; }
       .message { margin: 14px 0 0; color: #44546f; font-size: 14px; }
       .message.error { color: #ae2e24; }
+      .message.success { color: #216e4e; }
       .case-list { display: grid; gap: 12px; margin-top: 20px; }
       .case {
         border: 1px solid #dfe1e6; border-radius: 6px; padding: 14px;
@@ -205,10 +206,11 @@
 
     const storyKey = getStoryKey();
     if (!storyKey) return;
+    let isCreating = false;
 
     const backdrop = makeElement("div", "backdrop");
     backdrop.addEventListener("click", event => {
-      if (event.target === backdrop) closeDialog();
+      if (!isCreating && event.target === backdrop) closeDialog();
     });
 
     const dialog = makeElement("section", "dialog");
@@ -223,7 +225,9 @@
     const closeButton = makeElement("button", "close", "×");
     closeButton.type = "button";
     closeButton.setAttribute("aria-label", "Close");
-    closeButton.addEventListener("click", closeDialog);
+    closeButton.addEventListener("click", () => {
+      if (!isCreating) closeDialog();
+    });
     header.append(titleGroup, closeButton);
 
     const content = makeElement("div", "content");
@@ -251,8 +255,10 @@
     actions.hidden = true;
     const cancel = makeElement("button", "secondary", "Cancel");
     cancel.type = "button";
-    cancel.addEventListener("click", closeDialog);
-    const create = makeElement("button", "primary", "Create");
+    cancel.addEventListener("click", () => {
+      if (!isCreating) closeDialog();
+    });
+    const create = makeElement("button", "primary", "Create in Jira");
     create.type = "button";
     actions.append(cancel, create);
 
@@ -301,12 +307,89 @@
           : "The server returned no test cases.";
         actions.hidden = false;
 
-        create.onclick = () => {
-          caseList.querySelectorAll('input[type="checkbox"]:checked').forEach(input => {
-            const testCase = testCases[Number(input.dataset.caseIndex)];
-            if (testCase) console.log("Selected test case:", testCase);
+        create.onclick = async () => {
+          const selectedCases = [...caseList.querySelectorAll('input[type="checkbox"]:checked')]
+            .map(input => testCases[Number(input.dataset.caseIndex)])
+            .filter(Boolean);
+          if (!selectedCases.length) {
+            message.classList.add("error");
+            message.textContent = "Select at least one test case to create in Jira.";
+            return;
+          }
+
+          create.disabled = true;
+          isCreating = true;
+          dialog.setAttribute("aria-busy", "true");
+          submit.disabled = true;
+          cancel.disabled = true;
+          closeButton.disabled = true;
+          caseList.querySelectorAll('input[type="checkbox"]').forEach(input => {
+            input.disabled = true;
           });
-          closeDialog();
+          message.classList.remove("error", "success");
+          message.textContent = `Creating ${selectedCases.length} Jira task${selectedCases.length === 1 ? "" : "s"}. Please wait…`;
+          try {
+            const createResponse = await chrome.runtime.sendMessage({
+              type: "create-jira-test-cases",
+              payload: {
+                story_key: storyKey,
+                test_case_ids: selectedCases.map(testCase => testCase.id)
+              }
+            });
+            const createResult = createResponse?.body;
+            const created = Array.isArray(createResult?.data?.created)
+              ? createResult.data.created
+              : [];
+
+            const allCreatedAndLinked = createResponse?.ok
+              && created.length === selectedCases.length
+              && selectedCases.every(testCase =>
+                created.some(item =>
+                  item.test_case_id === testCase.id
+                  && typeof item.key === "string"
+                  && item.linked === true
+                )
+              );
+            if (!allCreatedAndLinked) {
+              const createdKeys = created.map(item => item.key).join(", ");
+              const partialSuccess = createdKeys
+                ? ` Jira created ${createdKeys}; linked: ${created.filter(item => item.linked).map(item => item.key).join(", ") || "none"}.`
+                : "";
+              throw new Error(
+                `${createResult?.error || createResponse?.error || "Jira could not create all selected test cases."}${partialSuccess}`
+              );
+            }
+
+            isCreating = false;
+            dialog.removeAttribute("aria-busy");
+            closeButton.disabled = false;
+            cancel.disabled = false;
+            instructionsLabel.hidden = true;
+            instructions.hidden = true;
+            submitRow.hidden = true;
+            caseList.hidden = true;
+            create.hidden = true;
+            cancel.textContent = "Close";
+            message.classList.add("success");
+            message.textContent = `Successfully created ${created.length} test case${created.length === 1 ? "" : "s"} and linked ${created.length === 1 ? "it" : "them"} to ${storyKey}.`;
+          } catch (error) {
+            isCreating = false;
+            dialog.removeAttribute("aria-busy");
+            submit.disabled = false;
+            cancel.disabled = false;
+            closeButton.disabled = false;
+            instructionsLabel.hidden = true;
+            instructions.hidden = true;
+            submitRow.hidden = true;
+            caseList.hidden = true;
+            create.hidden = true;
+            cancel.textContent = "Close";
+            message.classList.remove("success");
+            message.classList.add("error");
+            message.textContent = error instanceof Error
+              ? `Unable to create test cases in Jira: ${error.message}`
+              : "Unable to create test cases in Jira because of an unexpected error.";
+          }
         };
       } catch (error) {
         message.classList.add("error");
